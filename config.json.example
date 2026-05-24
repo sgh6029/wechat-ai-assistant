@@ -1,0 +1,7 @@
+{
+    "weflow_base_url": "http://127.0.0.1:5031",
+    "access_token": "your_access_token_here",
+    "ollama_url": "http://127.0.0.1:11434/api/generate",
+    "ollama_model": "qwen3.5:2b-q4_K_M",
+    "buffer_seconds": 40
+}
