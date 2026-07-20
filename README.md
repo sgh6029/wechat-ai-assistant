@@ -3,7 +3,7 @@
 基于 WeFlow 和 Ollama 的微信自动回复机器人，支持实时消息推送、本地 AI 模型、消息合并缓冲、语音/表情包过滤、智能窗口查找。
 
 源代码在bot.py中,有什么不会的让DeepSeek教你
-下载链接  https://github.com/sgh6029/wechat-ai-assistant/releases/tag/2.0
+链接https://github.com/sgh6029/wechat-ai-assistant/releases/tag/2.0
 
 ## 功能特性
 
