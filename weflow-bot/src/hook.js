@@ -96,6 +96,7 @@ function ok(v) { return { ok: true, value: v }; }
 // ---------------------------------------------------------------------------
 function defaultConfig() {
   return {
+    paths: { root: '' },        // 数据根目录；空 = <WeFlow>/resources/wfai/data
     auto_reply: false,
     dry_run: true,
     listen: true,               // 是否订阅 WeFlow 推送（独立于 auto_reply）
@@ -720,8 +721,16 @@ function stickerDir() {
   return d;
 }
 
+// 表情包列表缓存：目录内文件有增删（mtime 变了）才重新 readdir，
+// 避免每按一次按钮、每回一次消息都去扫一遍磁盘
+const _stCache = { dir: '', mtime: 0, names: [], total: 0 };
 function listStickers(max = 400) {
   const dir = stickerDir();
+  let mt = 0;
+  try { mt = fs.statSync(dir).mtimeMs; } catch (_) {}
+  if (_stCache.dir === dir && _stCache.mtime === mt && _stCache.names.length) {
+    return { dir, names: _stCache.names.slice(0, max), total: _stCache.total, cached: true };
+  }
   let names = [];
   try {
     names = fs.readdirSync(dir, { withFileTypes: true })
@@ -729,6 +738,10 @@ function listStickers(max = 400) {
       .map((d) => d.name)
       .sort();
   } catch (_) {}
+  _stCache.dir = dir;
+  _stCache.mtime = mt;
+  _stCache.names = names;
+  _stCache.total = names.length;
   return { dir, names: names.slice(0, max), total: names.length };
 }
 
@@ -3212,6 +3225,21 @@ ${atLine}
 // ---------------------------------------------------------------------------
 // 本地归档管理 + 检索（每个会话一个 ndjson，天然隔离）
 // ---------------------------------------------------------------------------
+// 归档目录扫描很贵（几百个文件夹 + 读首尾），加个带 TTL 的缓存，
+// 归档写入 / 删除 / 压缩后主动失效
+const _arcCache = { at: 0, items: null, dir: '' };
+function invalidateArchiveCache() { _arcCache.at = 0; _arcCache.items = null; }
+function archiveFilesCached() {
+  const dir = archiveDir();
+  const ttl = 90000;   // 90 秒
+  if (_arcCache.items && _arcCache.dir === dir && Date.now() - _arcCache.at < ttl) return _arcCache.items;
+  const items = archiveFiles();
+  _arcCache.dir = dir;
+  _arcCache.at = Date.now();
+  _arcCache.items = items;
+  return items;
+}
+
 function archiveFiles() {
   const dir = archiveDir();
   const out = [];
@@ -3652,6 +3680,7 @@ async function runArchive(reason, onlySessionId) {
           cur.ts = rows.reduce((mx, m) => Math.max(mx, Number(m.createTime || 0)), cur.ts);
           cur.pending += rows.length;
           stats.appended += rows.length;
+          invalidateArchiveCache();
         }
         cur.lastRun = Date.now();
         cursors[s.username] = cur;
@@ -4057,7 +4086,17 @@ async function handleUiOp(body) {
     }
     case 'pickDir': {
       const { dialog } = require('electron');
-      const r = await dialog.showOpenDialog({ title: body.title || '选择文件夹', properties: ['openDirectory'] });
+      // defaultPath 决定对话框从哪儿打开；不传就会永远停在系统默认位置
+      const opts = { title: body.title || '选择文件夹', properties: ['openDirectory'] };
+      let def = String(body.defaultPath || '').trim();
+      if (!def) {
+        const sd = S.cfg.sticker || {};
+        if (body.kind === 'sticker') def = String(sd.dir || '').trim();
+      }
+      if (def) {
+        try { if (fs.existsSync(def)) opts.defaultPath = def; } catch (_) {}
+      }
+      const r = await dialog.showOpenDialog(opts);
       return { path: (r.filePaths || [])[0] || null, canceled: r.canceled };
     }
     case 'installPlugin': {
@@ -4309,6 +4348,7 @@ module.exports.run = async function run(ctx) {
       // 先备份再写
       try { fs.copyFileSync(file, file + '.bak'); } catch (_) {}
       fs.writeFileSync(file, text, 'utf8');
+      invalidateArchiveCache();
       const okLines = text.split('\n').filter((l) => {
         if (!l.trim()) return false;
         try { JSON.parse(l); return true; } catch (_) { return false; }
@@ -4317,9 +4357,32 @@ module.exports.run = async function run(ctx) {
       log('info', `归档文件已手动修改：${path.basename(path.dirname(file))}（${okLines} 条有效${badLines ? '，' + badLines + ' 条格式不对' : ''}）`);
       return { ok: true, path: file, valid: okLines, invalid: badLines };
     }
+    case 'dataPaths': {
+      return {
+        root: PATHS.cfgDir,
+        old: PATHS.oldCfgDir || null,
+        migrated: PATHS.migrated || 0,
+        isDefault: !((S.cfg.paths || {}).root),
+        subdirs: { archive: PATHS.archive, context: path.join(PATHS.cfgDir, 'context'), logs: PATHS.logs, stickers: path.join(PATHS.cfgDir, 'stickers'), workspace: PATHS.workspace, out: PATHS.out, plugins: path.join(PATHS.cfgDir, 'plugins') },
+      };
+    }
+    case 'setDataRoot': {
+      const want = String(body.root || '').trim();
+      const isDefault = !want || want === '__default__';
+      const target = isDefault && WFAI_DIR ? path.join(WFAI_DIR, 'data') : want;
+      if (!isDefault && !target) throw new Error('路径为空');
+      if (!isDefault) {
+        try { fs.mkdirSync(target, { recursive: true }); } catch (e) { throw new Error('无法创建目录: ' + e.message); }
+      }
+      saveConfig({ paths: { root: isDefault ? '' : target } });
+      log('info', '数据目录已改为：' + target + '（重启后生效，会自动把旧数据复制过来）');
+      return { ok: true, root: target, isDefault, needRestart: path.resolve(target) !== path.resolve(PATHS.cfgDir) };
+    }
     case 'archiveList': {
-      const list = archiveFiles();
-      return { dir: archiveDir(), totals: archiveTotals(list), items: list.slice(0, 500) };
+      const wantRefresh = body.refresh === true;
+      if (wantRefresh) invalidateArchiveCache();
+      const list = archiveFilesCached();
+      return { dir: archiveDir(), totals: archiveTotals(list), items: list.slice(0, 500), cached: !wantRefresh };
     }
     case 'archiveDelete': {
       const sid = String(body.sessionId || '').trim();
@@ -4356,6 +4419,7 @@ module.exports.run = async function run(ctx) {
       try {
         if (S.archive.cursors && S.archive.cursors[sid]) { delete S.archive.cursors[sid]; saveCursors(S.archive.cursors); }
       } catch (_) {}
+      invalidateArchiveCache();
       log('info', `已删除归档：${sid}（${removed.length} 个文件）`);
       return { ok: true, removed };
     }
@@ -4374,6 +4438,7 @@ module.exports.run = async function run(ctx) {
         const pdir = path.join(dir, 'packed');
         if (fs.existsSync(pdir)) { for (const f of fs.readdirSync(pdir)) { try { fs.unlinkSync(path.join(pdir, f)); } catch (_) {} } }
       } catch (e) { throw new Error('清空失败: ' + e.message); }
+      invalidateArchiveCache();
       try { S.archive.cursors = {}; saveCursors(S.archive.cursors); } catch (_) {}
       log('warn', `已清空全部归档（${n} 个文件）`);
       return { ok: true, removed: n };
@@ -4634,6 +4699,44 @@ function boot() {
       }
     } catch (_) {}
     PATHS.cfgFile = path.join(PATHS.cfgDir, 'config.json');
+    // ---- 数据根目录：默认放 WeFlow 目录下，分类存放；用户可在设置里改
+    try {
+      // 先把可能存在的旧配置读出来看用户有没有指定
+      let wantRoot = '';
+      try {
+        const j = JSON.parse(fs.readFileSync(PATHS.cfgFile, 'utf8'));
+        if (j && j.paths && typeof j.paths.root === 'string') wantRoot = j.paths.root.trim();
+      } catch (_) {}
+      if (!wantRoot && WFAI_DIR) wantRoot = path.join(WFAI_DIR, 'data');
+      if (wantRoot && path.resolve(wantRoot) !== path.resolve(PATHS.cfgDir)) {
+        const subdirs = ['archive', 'context', 'logs', 'stickers', 'workspace', 'out', 'plugins'];
+        const newEmpty = !fs.existsSync(wantRoot) || fs.readdirSync(wantRoot).length === 0;
+        // 旧目录有数据、新目录是空的 → 复制过去（保留旧的，不删）
+        if (newEmpty) {
+          let moved = 0;
+          try { fs.mkdirSync(wantRoot, { recursive: true }); } catch (_) {}
+          for (const d of subdirs) {
+            const from = path.join(PATHS.cfgDir, d);
+            if (!fs.existsSync(from)) continue;
+            try {
+              fs.cpSync(from, path.join(wantRoot, d), { recursive: true });
+              moved++;
+            } catch (_) {}
+          }
+          const cfgOld = path.join(PATHS.cfgDir, 'config.json');
+          if (fs.existsSync(cfgOld)) {
+            try { fs.copyFileSync(cfgOld, path.join(wantRoot, 'config.json')); moved++; } catch (_) {}
+          }
+          if (moved) {
+            PATHS.migrated = moved;
+            PATHS.migratedFrom = PATHS.cfgDir;
+          }
+        }
+        PATHS.oldCfgDir = PATHS.cfgDir;
+        PATHS.cfgDir = wantRoot;
+        PATHS.cfgFile = path.join(PATHS.cfgDir, 'config.json');
+      }
+    } catch (_) {}
     PATHS.logs = path.join(PATHS.cfgDir, 'logs');
     PATHS.archive = path.join(PATHS.cfgDir, 'archive');
     PATHS.workspace = path.join(PATHS.cfgDir, 'workspace');

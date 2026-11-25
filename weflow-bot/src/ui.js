@@ -16,7 +16,7 @@
 
   'use strict';
 
-  const WFAI_BUILD = '2026-11-25T19:35:42';
+  const WFAI_BUILD = '2026-11-25T20:44:28';
 
   if (window.__WFAI_UI__) {
 
@@ -708,10 +708,21 @@
       let changed = false;
       const patch = {};
       if (!cur.access_token) {
-        const t = await bridge.config.get('httpApiToken');
+        let t = await bridge.config.get('httpApiToken');
         if (t && typeof t === 'string' && t.trim() && !t.startsWith('safe:')) {
           patch.access_token = t.trim();
           changed = true;
+        } else {
+          // WeFlow 自己也解不出来了（userData 被清空过、加密密钥丢了）→ 生成一个新的写回去
+          const bytes = new Uint8Array(16);
+          (window.crypto || crypto).getRandomValues(bytes);
+          const fresh = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
+          try { await bridge.config.set('httpApiToken', fresh); } catch (_) {}
+          const back = await bridge.config.get('httpApiToken');
+          if (back && typeof back === 'string' && back.length >= 16 && !back.startsWith('safe:')) {
+            patch.access_token = back.trim();
+            changed = true;
+          }
         }
       }
       const port = await bridge.config.get('httpApiPort');
@@ -1245,6 +1256,16 @@
 
         ${renderFilterCard()}
 
+    <div class="wfai-card">
+      <h3>数据目录（缓存放哪）</h3>
+      <div class="wfai-row"><label>当前</label><span class="wfai-note" style="margin:0;word-break:break-all" id="dp-root">${esc((uiState.dataPaths || {}).root || "")}</span></div>
+      <div class="wfai-row">
+        <button class="wfai-btn" id="dp-pick">选择目录</button>
+        <button class="wfai-btn ghost" id="dp-default">改回默认（WeFlow 目录下）</button>
+      </div>
+      <div class="wfai-note" id="dp-note">默认在 <code>WeFlow\resources\wfai\data\</code>，里面按 archive / context / logs / stickers / workspace / out / plugins 分类。<br>换目录后重启生效，旧数据会自动复制过去（原来的不删）。</div>
+    </div>
+
         <div class="wfai-card">
 
           <h3>WeFlow 与微信</h3>
@@ -1303,7 +1324,8 @@
 
   const fmt = (ts) => ts ? new Date(ts).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-';
 
-  const rows = list.slice(0, 400).map((x) => `
+  const limit = uiState.arAll ? 400 : 50;
+  const rows = list.slice(0, limit).map((x) => `
 
     <div class="wfai-pick" data-arsid="${esc(x.sessionId)}" style="cursor:default">
 
@@ -1340,6 +1362,7 @@
         <span class="wfai-note" style="margin:0">每行右侧「删除」会连压缩包一起删；删掉后这些会话不再占用空间</span></div>
 
       <div class="wfai-list" style="max-height:240px">${rows || '<div class="wfai-empty">没有归档文件</div>'}</div>
+      ${list.length > 50 ? `<div class="wfai-note">只显示前 ${limit} 个（共 ${list.length} 个）${uiState.arAll ? '' : ' · <a href="#" id="arc-all">显示全部</a>'}</div>` : ''}
 
       <h3 style="margin-top:14px">在本机聊天记录里查</h3>
 
@@ -1823,7 +1846,7 @@ function renderGroupCards() {
 
           <div class="wfai-row"><label>表情包目录</label><input class="wfai-in" id="st-dir" placeholder="${esc(st.dir || '')}" value="${esc(st.dir || '')}">
 
-            <button class="wfai-btn ghost" id="st-open">打开目录</button></div>
+            <button class="wfai-btn" id="st-browse">选择</button><button class="wfai-btn ghost" id="st-open">打开目录</button></div>
 
           <div class="wfai-row"><label>怎么挑</label>
 
@@ -3302,7 +3325,7 @@ function renderGroupCards() {
 
     on('#arc-refresh', 'click', async () => {
 
-      try { const r = await act('archiveList'); uiState.archiveMgr = r.result || {}; renderBody(true); } catch (e) { toast(e.message, 'err'); }
+      try { const r = await act('archiveList', { refresh: true }); uiState.archiveMgr = r.result || {}; renderBody(true); } catch (e) { toast(e.message, 'err'); }
 
     });
 
@@ -3320,6 +3343,7 @@ function renderGroupCards() {
 
     });
 
+    on('#arc-all', 'click', (e) => { e.preventDefault(); uiState.arAll = true; renderBody(true); });
     on('#arc-clear', 'click', async () => {
 
       if (!confirm('会删掉所有会话的归档文件（含压缩包），此操作不可撤销。确认？')) return;
@@ -4020,6 +4044,47 @@ function renderGroupCards() {
 
     });
 
+    // 数据目录
+    if (tab === 'settings' && els.page.querySelector('#dp-root') && !uiState.dataPaths) {
+      act('dataPaths').then((r) => { uiState.dataPaths = r.result || {}; renderBody(true); }).catch(() => {});
+    }
+    on('#dp-pick', 'click', async () => {
+      const cur = ((uiState.dataPaths || {}).root) || '';
+      try {
+        const r = await api('api', { op: 'pickDir', title: '选择缓存目录', defaultPath: cur });
+        const p = r && r.result && r.result.path;
+        if (!p) return;
+        await act('setDataRoot', { root: p });
+        const d = await act('dataPaths');
+        uiState.dataPaths = d.result || {};
+        const note = els.page.querySelector('#dp-note');
+        if (note) note.innerHTML = '已设为 <code>' + p + '</code>，<b>重启 WeFlow 后生效</b>，旧数据会自动复制过去。';
+        renderBody(true);
+      } catch (e) { toast(e.message, 'err'); }
+    });
+    on('#dp-default', 'click', async () => {
+      try {
+        const r = await act('setDataRoot', { root: '__default__' });
+        const d = await act('dataPaths');
+        uiState.dataPaths = d.result || {};
+        const note = els.page.querySelector('#dp-note');
+        if (note) note.innerHTML = '已改回默认 <code>' + ((r.result || {}).root || '') + '</code>，<b>重启 WeFlow 后生效</b>。';
+        renderBody(true);
+      } catch (e) { toast(e.message, 'err'); }
+    });
+    on('#st-browse', 'click', async () => {
+      const input = els.page.querySelector('#st-dir');
+      const cur = input ? String(input.value || '').trim() : '';
+      try {
+        const r = await api('api', { op: 'pickDir', kind: 'sticker', title: '选择本地表情包库目录', defaultPath: cur });
+        const p = r && r.result && r.result.path;
+        if (!p) return;
+        if (input) input.value = p;
+        await act('save', { cfg: { sticker: { dir: p } } });
+        const l = await act('stickerList');
+        toast('已设置为 ' + p + '（' + (((l.result || {}).total) || 0) + ' 张图）');
+      } catch (e) { toast(e.message, 'err'); }
+    });
     on('#st-open', 'click', async () => {
 
       try {
@@ -4556,7 +4621,8 @@ function renderGroupCards() {
 
         || s.started !== uiState.started
 
-        || (s.logs.length && uiState.logs.length && s.logs[s.logs.length - 1].ts !== uiState.logs[uiState.logs.length - 1].ts);
+        // 日志每几秒就多一行，不该因为它整页重绘（只有日志页才需要刷）
+        || (tab === 'logs' && s.logs.length && uiState.logs.length && s.logs[s.logs.length - 1].ts !== uiState.logs[uiState.logs.length - 1].ts);
 
       // 服务端快照里没有这些"本地界面状态"，替换时要把它们留住，
 
@@ -4859,7 +4925,22 @@ function renderGroupCards() {
 
 
 
-    pollTimer = setInterval(() => refresh(false), open_ ? 2000 : 6000);
+    // 轮询：面板打开时 4 秒一次（原来是 2 秒，重绘太频繁，鼠标悬停会一直闪）
+    // 鼠标停在面板里、或者在某个输入框里打字时，跳过这次重绘，避免打断操作
+    let hovering = false;
+    try {
+      document.addEventListener('mouseover', (e) => {
+        hovering = !!(els.page && els.page.contains(e.target));
+      }, true);
+    } catch (_) {}
+    pollTimer = setInterval(() => {
+      try {
+        if (hovering) return;
+        const act = document.activeElement;
+        if (act && els.page && els.page.contains(act) && /INPUT|TEXTAREA|SELECT/.test(act.tagName)) return;
+      } catch (_) {}
+      refresh(false);
+    }, open_ ? 4000 : 12000);
 
     refresh(false);
 
