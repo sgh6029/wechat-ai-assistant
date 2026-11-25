@@ -1,0 +1,9 @@
+{
+  "id": "docx",
+  "name": "生成 Word",
+  "version": "1.0.0",
+  "description": "把聊天内容整理成 .docx 文档",
+  "commands": ["word", "docx", "文档"],
+  "usage": "/word 标题\n# 一级标题\n## 二级标题\n普通段落\n- 列表项\n| 表格 | 表头 |",
+  "builtin": true
+}

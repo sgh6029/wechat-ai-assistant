@@ -1,0 +1,9 @@
+{
+  "id": "pptx",
+  "name": "生成 PPT",
+  "version": "1.0.0",
+  "description": "把聊天里的提纲整理成 .pptx 演示文稿",
+  "commands": ["ppt", "演示稿"],
+  "usage": "/ppt 标题\n# 第一页标题\n- 要点\n# 第二页标题\n- 要点",
+  "builtin": true
+}

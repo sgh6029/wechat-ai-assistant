@@ -1,0 +1,9 @@
+{
+  "id": "chat-digest",
+  "name": "聊天纪要",
+  "version": "1.0.0",
+  "description": "从本地归档里统计某会话，生成 Word 纪要（纯本地规则，不调大模型）",
+  "commands": ["纪要", "digest", "总结"],
+  "usage": "/纪要 [会话名或wxid] [天数=7]",
+  "builtin": true
+}

@@ -1,16 +1,31 @@
+# 运行时数据（永远不会提交）
+config.json
+config.json.bak
+config.json.tmp
+api.json
+archive/
+context/
+workspace/
+out/
+logs/
+stickers/
+plugins/runtime/
+
+# 构建产物
+build/
+*.zip
+*.exe
+app.asar
+*.asar
+
+# 依赖
+node_modules/
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-.Python
-*.so
-*.egg
-*.egg-info/
-dist/
-build/
-*.exe
-*.spec
-*.log
-*.cache
+.venv/
+
+# 编辑器
 .vscode/
 .idea/
+*.swp
+.DS_Store
