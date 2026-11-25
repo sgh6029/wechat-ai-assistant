@@ -16,7 +16,7 @@
 
   'use strict';
 
-  const WFAI_BUILD = '2026-11-25T21:07:37';
+  const WFAI_BUILD = '2026-11-25T21:13:39';
 
   if (window.__WFAI_UI__) {
 
@@ -68,7 +68,9 @@
 
   let CATALOG = null;                                  // 联系人 + 群聊目录
 
-  let dataPathsLoaded = false;   // 数据目录信息只拉一次，避免重绘死循环
+  let dataPathsLoaded = false;    // 数据目录信息只拉一次，避免重绘死循环
+  let archiveMgrLoaded = false;   // 归档列表只拉一次（以前用 uiState 判断，轮询会把它清掉 → 无限循环）
+  let stickerCountLoaded = false; // 表情包数量只拉一次
   const WL = { query: '', kind: 'all', showAll: false };   // 名单选择器状态（showAll=展开全部）
 
   const WLF = { loaded: false, list: [], mode: 'whitelist', enabled: true };  // WeFlow 侧状态
@@ -1186,8 +1188,13 @@
 
           <div class="wfai-row" style="display:block"><label style="display:block;margin-bottom:6px">系统提示词</label>
 
-            <textarea class="wfai-ta" id="cfg-prompt">${esc(c.system_prompt)}</textarea></div>
+            <textarea class="wfai-ta" id="cfg-prompt" style="min-height:300px;font-size:12.5px;line-height:1.7" placeholder="留空 = 用默认提示词">${esc(c.system_prompt)}</textarea>
+            <div class="wfai-note" style="display:flex;gap:10px;align-items:center">
+              <span id="cfg-prompt-count">${(c.system_prompt || '' ).length} 字</span>
+              <span style="color:var(--wfai-dim)">支持换行；越具体效果越好，建议写清身份、语气、回复长度、禁止事项</span>
+            </div>
 
+          </div>
         </div>
 
         <div class="wfai-card">
@@ -1716,7 +1723,7 @@ function renderGroupRules(g) {
 
       </div>
 
-      <div class="wfai-row"><textarea class="wfai-ta" id="gr-${i}-prompt" style="min-height:48px" placeholder="这个群专用的提示词（留空 = 用全局群聊提示词）">${esc(r.system_prompt || '')}</textarea></div>
+      <div class="wfai-row"><textarea class="wfai-ta" id="gr-${i}-prompt" style="min-height:110px" placeholder="这个群专用的提示词（留空 = 用全局群聊提示词）">${esc(r.system_prompt || '')}</textarea></div>
 
     </div>`).join('');
 
@@ -1786,7 +1793,7 @@ function renderGroupCards() {
 
           <div class="wfai-row" style="display:block"><label style="display:block;margin-bottom:6px">群聊专属提示词（留空 = 用全局）</label>
 
-            <textarea class="wfai-ta" id="g-prompt" style="min-height:64px">${esc(g.system_prompt || '')}</textarea></div>
+            <textarea class="wfai-ta" id="g-prompt" style="min-height:160px">${esc(g.system_prompt || '')}</textarea></div>
 
           <div class="wfai-note">当前是「按发言人分开合并」：A 和 B 同时 @ 你，会走两条独立管线，各自收到针对自己的回复，不会互相顶掉。
 
@@ -3383,9 +3390,10 @@ function renderGroupCards() {
 
     // ---- 本地归档管理 ----
 
-    if (tab === 'rules' && els.page.querySelector('#arc-refresh') && !uiState.archiveMgr) {
+    if (tab === 'rules' && els.page.querySelector('#arc-refresh') && !archiveMgrLoaded) {
+      archiveMgrLoaded = true;
 
-      act('archiveList').then((r) => { uiState.archiveMgr = r.result || {}; renderBody(true); }).catch(() => {});
+      act('archiveList').then((r) => { uiState.archiveMgr = r.result || {}; renderBodySafe(false); }).catch(() => { archiveMgrLoaded = false; });
 
     }
 
@@ -3630,6 +3638,17 @@ function renderGroupCards() {
 
     });
 
+    on('#cfg-prompt', 'input', (e) => {
+      const cnt = els.page.querySelector('#cfg-prompt-count');
+      if (cnt) cnt.textContent = (e.target.value || '').length + ' 字';
+    });
+    // 双击提示词框：切换到占满高度的编辑模式（写长提示词时方便）
+    on('#cfg-prompt', 'dblclick', (e) => {
+      const ta = e.target;
+      const big = ta.dataset.big === '1';
+      ta.dataset.big = big ? '0' : '1';
+      ta.style.minHeight = big ? '300px' : (window.innerHeight - 260) + 'px';
+    });
     on('#wf-auto', 'click', async () => {
 
       const note = els.page.querySelector('#wf-auto-note');
@@ -4349,7 +4368,8 @@ function renderGroupCards() {
 
     });
 
-    if (els.page.querySelector('#st-count')) {
+    if (els.page.querySelector('#st-count') && !stickerCountLoaded) {
+      stickerCountLoaded = true;
 
       api('api', { op: 'stickerList' }).then((r) => {
 
