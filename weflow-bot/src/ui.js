@@ -16,7 +16,7 @@
 
   'use strict';
 
-  const WFAI_BUILD = '2026-11-25T20:44:28';
+  const WFAI_BUILD = '2026-11-25T20:53:06';
 
   if (window.__WFAI_UI__) {
 
@@ -196,7 +196,12 @@
 
   .wfai-stat .v{font-size:19px;font-weight:650;margin-top:2px}
 
-  .wfai-tabs{display:flex;gap:6px;padding:0 22px;border-bottom:1px solid var(--wfai-line)}
+  .wfai-tabs{display:flex;gap:6px;padding:0 22px;border-bottom:1px solid var(--wfai-line);align-items:center}
+.wfai-savebar{margin-left:auto;display:flex;align-items:center;gap:8px;padding:4px 0}
+.wfai-savebar .dirty{font-size:12px;color:#e8b04b;display:none}
+.wfai-savebar.dirty .dirty{display:inline}
+.wfai-savebar #wfai-save-top{padding:5px 14px;font-size:13px}
+.wfai-savebar #wfai-save-top.has{box-shadow:0 0 0 2px rgba(232,176,75,.35)}
 
   .wfai-tab{padding:9px 14px;border-radius:8px 8px 0 0;color:var(--wfai-dim);cursor:pointer;border:1px solid transparent;border-bottom:none;user-select:none}
 
@@ -403,6 +408,11 @@
         <div class="wfai-tab" data-tab="plugins">插件</div>
 
         <div class="wfai-tab" data-tab="logs">日志</div>
+
+        <div class="wfai-savebar" id="wfai-savebar">
+          <span class="dirty" id="wfai-dirty">● 有未保存的修改</span>
+          <button class="wfai-btn pri" id="wfai-save-top">保存设置</button>
+        </div>
 
       </div>
 
@@ -1304,7 +1314,7 @@
 
         <button class="wfai-btn ghost" id="wfai-reload-cfg">丢弃修改</button>
 
-        <button class="wfai-btn pri" id="wfai-save">保存设置</button>
+        <button class="wfai-btn pri" id="wfai-save">保存设置</button><span class="wfai-note" style="margin:0">（右上角那个按钮在哪个页签都能点）</span>
 
       </div>`;
 
@@ -3243,6 +3253,31 @@ function renderGroupCards() {
 
 
   function wire() {
+    // ---- 顶部固定「保存设置」：任何页签都可见，按当前页签决定存什么 ----
+    (function bindTopSave() {
+      const topSave = els.page.querySelector('#wfai-save-top');
+      const saveBar = els.page.querySelector('#wfai-savebar');
+      const dirtyTag = els.page.querySelector('#wfai-dirty');
+      const cnt = (typeof DIRTY !== 'undefined' && DIRTY) ? DIRTY.size : 0;
+      const has = cnt > 0;
+      if (saveBar) saveBar.classList.toggle('dirty', has);
+      if (topSave) {
+        topSave.classList.toggle('has', has);
+        if (!topSave.dataset.bound) {
+          topSave.dataset.bound = '1';
+          topSave.addEventListener('click', () => {
+            const sBtn = els.page.querySelector('#wfai-save');
+            const rBtn = els.page.querySelector('#wfai-rules-save');
+            if (sBtn) { sBtn.click(); toast('设置已保存'); return; }
+            if (rBtn) { rBtn.click(); toast('规则已保存'); return; }
+            try { window.__WFAI_UI__.goto('settings'); } catch (_) {}
+            toast('已切到设置页，改完点右上角保存');
+          });
+        }
+      }
+      if (dirtyTag) dirtyTag.textContent = has ? ('● ' + cnt + ' 处未保存') : '';
+    })();
+
 
     adoptWeFlowEndpoint();
     hideTelemetryToggle();
@@ -4933,6 +4968,13 @@ function renderGroupCards() {
         hovering = !!(els.page && els.page.contains(e.target));
       }, true);
     } catch (_) {}
+    document.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === 's') {
+        e.preventDefault();
+        const b = document.querySelector('#wfai-save-top');
+        if (b) b.click();
+      }
+    });
     pollTimer = setInterval(() => {
       try {
         if (hovering) return;
