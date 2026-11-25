@@ -16,7 +16,7 @@
 
   'use strict';
 
-  const WFAI_BUILD = '2026-11-25T20:53:06';
+  const WFAI_BUILD = '2026-11-25T21:07:37';
 
   if (window.__WFAI_UI__) {
 
@@ -68,7 +68,8 @@
 
   let CATALOG = null;                                  // 联系人 + 群聊目录
 
-  const WL = { query: '', kind: 'all' };               // 名单选择器状态
+  let dataPathsLoaded = false;   // 数据目录信息只拉一次，避免重绘死循环
+  const WL = { query: '', kind: 'all', showAll: false };   // 名单选择器状态（showAll=展开全部）
 
   const WLF = { loaded: false, list: [], mode: 'whitelist', enabled: true };  // WeFlow 侧状态
 
@@ -116,6 +117,17 @@
 
 
 
+  // 请求失败不能静默 —— 否则面板看起来就是"按钮全点不动"
+  let apiFailToastAt = 0;
+  function apiFailNotify(err) {
+    const now = Date.now();
+    if (now - apiFailToastAt < 8000) return;
+    apiFailToastAt = now;
+    try {
+      toast('与 Bot 的连接断了，请重启 WeFlow（' + (err && err.message ? err.message : '网络错误') + '）', 'err');
+    } catch (_) {}
+  }
+
   async function api(path, body) {
 
     const opt = body
@@ -124,9 +136,18 @@
 
       : { method: 'GET', headers: { 'x-wfai': TOKEN } };
 
-    const r = await fetch(API + path, opt);
+    let r;
+    try {
+      r = await fetch(API + path, opt);
+    } catch (netErr) {
+      apiFailNotify(netErr);
+      throw netErr;
+    }
 
-    if (!r.ok) throw new Error(`${path} → HTTP ${r.status}`);
+    if (!r.ok) {
+      apiFailNotify(new Error('HTTP ' + r.status));
+      throw new Error(`${path} → HTTP ${r.status}`);
+    }
 
     return r.json();
 
@@ -850,7 +871,9 @@
 
     if (q) items = items.filter((x) => String(x.name || '').toLowerCase().includes(q) || String(x.username || '').toLowerCase().includes(q));
 
-    const shown = items.slice(0, 500);
+    // 名单动辄几百个，一次全渲染会拖慢整页（每个复选框都是一次布局）
+    const wlLimit = WL.showAll ? 500 : 40;
+    const shown = items.slice(0, wlLimit);
 
     const rows = shown.map((x) => `<label class="wfai-pick">
 
@@ -897,6 +920,7 @@
         </div>
 
         <div class="wfai-list" id="wl-list">${rows || `<div class="wfai-empty">${CATALOG ? '没有匹配项' : '目录加载中…'}</div>`}</div>
+        ${items.length > wlLimit ? `<div class="wfai-note">只显示前 ${wlLimit} 个（共 ${items.length} 个）${WL.showAll ? '' : ' · <a href="#" id="wl-more">显示更多</a>'}　用上面的搜索框可以快速找</div>` : ''}
 
         <div class="wfai-row">
 
@@ -3252,7 +3276,14 @@ function renderGroupCards() {
 
 
 
+  // 把每段绑定隔离开：任何一段抛错都不能让后面的按钮变砖
+  function safeBind(fn) { try { fn(); } catch (e) { try { console.warn('[wfai] bind error', e); } catch (_) {} } }
+
   function wire() {
+    try { wireInner(); } catch (e) { try { (window.__WFAI_WIRE_ERR = window.__WFAI_WIRE_ERR || []).push(String((e && e.stack) || e)); } catch (_) {} try { console.warn('[wfai] wire error', e); } catch (_) {} }
+  }
+
+  function wireInner() {
     // ---- 顶部固定「保存设置」：任何页签都可见，按当前页签决定存什么 ----
     (function bindTopSave() {
       const topSave = els.page.querySelector('#wfai-save-top');
@@ -3749,53 +3780,40 @@ function renderGroupCards() {
 
     // ---- 规则页 ----
 
-    page.querySelectorAll('[data-rsw]').forEach((swEl) => {
+    // 开关统一走"事件委托"：绑在不会重建的 page 上，
+    // 这样即使某个 handler 绑定出错，开关也永远能用（以前是逐个元素绑 onclick，
+    // wire 中途抛错就整片开关失效）。
+    if (!page.dataset.rswBound) {
+      page.dataset.rswBound = '1';
+      page.addEventListener('click', (ev) => {
+        const sw = ev.target && ev.target.closest ? ev.target.closest('[data-rsw]') : null;
+        if (!sw) return;
+        toggleSwitch(sw);
+      });
+    }
 
-      swEl.onclick = async () => {
 
-        try {
+  // 开关的实际逻辑（被上面的委托调用）
+  async function toggleSwitch(swEl) {
+    try {
+      const path = swEl.dataset.rsw;
+      if (!path) return;
+      // 定时消息里的开关不参与 readRules，只切视觉状态，等「保存规则」统一收集
+      if (path.startsWith('sched.')) { swEl.classList.toggle('on'); return; }
+      const draft = readRules();
+      const looksOn = swEl.classList.contains('on');
+      const next = !looksOn;
+      setPath(draft, path, next);
+      swEl.classList.toggle('on', next);
+      await act('save', { cfg: draft });
+      try { Object.assign(uiState.cfg, draft); } catch (_) { uiState.cfg = draft; }
+      try { const s2 = await api('state'); if (s2 && s2.cfg) uiState.cfg = s2.cfg; } catch (_) {}
+    } catch (e) {
+      try { toast('开关保存失败：' + e.message, 'err'); } catch (_) {}
+    }
+  }
 
-          const path = swEl.dataset.rsw;
-
-          // 定时消息里的开关（sched.rule.N / .person / .dry）不参与 readRules，
-
-          // 只切换视觉状态，等点「保存规则」时由 readScheduleRules 一次性收集
-
-          if (path.startsWith('sched.')) {
-
-            swEl.classList.toggle('on');
-
-            return;
-
-          }
-
-          const draft = readRules();
-
-          // 关键：以画面上这个开关"当前看起来的样子"取反，
-
-          // 而不是读可能还没刷新的 uiState（否则连点两下会一直写同一个值）
-
-          const looksOn = swEl.classList.contains('on');
-
-          const next = !looksOn;
-
-          setPath(draft, path, next);
-
-          swEl.classList.toggle('on', next);
-
-          await act('save', { cfg: draft });
-
-          // 把本地快照同步成刚保存的，后续 readRules 不会再拿到旧值
-
-          try { Object.assign(uiState.cfg, draft); } catch (_) { uiState.cfg = draft; }
-
-          try { const s2 = await api('state'); if (s2 && s2.cfg) uiState.cfg = s2.cfg; } catch (_) {}
-
-        } catch (_) {}
-
-      };
-
-    });
+    // ↓↓↓ 以下为其余绑定（保持在 wireInner 作用域内，on() 才可见）
 
     on('#wfai-rules-save', 'click', () => act('save', { cfg: readRules() }, '规则已保存'));
 
@@ -3947,6 +3965,7 @@ function renderGroupCards() {
 
     }
 
+    on('#wl-more', 'click', (e) => { e.preventDefault(); WL.showAll = true; renderBody(true); });
     on('#wl-all', 'click', async () => {
 
       const cur = new Set(currentFilterList());
@@ -4080,7 +4099,9 @@ function renderGroupCards() {
     });
 
     // 数据目录
-    if (tab === 'settings' && els.page.querySelector('#dp-root') && !uiState.dataPaths) {
+    // 只用一次性标志位：uiState 每 4 秒被服务端快照覆盖，用它做条件会死循环
+    if (tab === 'settings' && els.page.querySelector('#dp-root') && !dataPathsLoaded) {
+      dataPathsLoaded = true;
       act('dataPaths').then((r) => { uiState.dataPaths = r.result || {}; renderBody(true); }).catch(() => {});
     }
     on('#dp-pick', 'click', async () => {
@@ -4626,9 +4647,10 @@ function renderGroupCards() {
 
     });
 
+
+
+
   }
-
-
 
   // --------------------------------------------------------------------- state
 
@@ -4670,6 +4692,7 @@ function renderGroupCards() {
         arQuery: uiState ? uiState.arQuery : undefined,
 
         arcEdit: uiState ? uiState.arcEdit : undefined,
+        dataPaths: uiState ? uiState.dataPaths : undefined,
 
       };
 
@@ -4677,7 +4700,10 @@ function renderGroupCards() {
 
       renderHeader();
 
-      if (open_ && (changed || force)) renderBodySafe(force);
+      const tabNeedsBody = tab === 'overview' || tab === 'messages' || tab === 'logs';
+      // 只有正在看的那一页数据变了才重绘：否则来一条消息就把整页（含按钮）重建，
+      // 你按下的一瞬间按钮已被换掉，表现就是"所有按钮点不动"。
+      if (open_ && (force || (tabNeedsBody && changed))) renderBodySafe(force);
 
     } catch (e) {
 
